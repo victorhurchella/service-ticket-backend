@@ -1,0 +1,112 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ASSOCIATE
+  MANAGER
+}
+
+enum Severity {
+  VERY_HIGH
+  HIGH
+  MEDIUM
+  LOW
+  EASY
+}
+
+enum Status {
+  DRAFT
+  REVIEW
+  PENDING
+  OPEN
+  CLOSED
+}
+
+model User {
+  id              String          @id @default(uuid()) @db.Uuid
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+  //
+  email           String          @unique
+  passwordHash    String          @map("password_hash")
+  role            Role
+  //
+  ticketsCreated  Ticket[]        @relation("CreatedTickets")
+  ticketsReviewed Ticket[]        @relation("ReviewedTickets")
+  histories       TicketHistory[]
+
+  @@index([role])
+  @@map("users")
+}
+
+model Ticket {
+  id                  String          @id @default(uuid()) @db.Uuid
+  createdAt           DateTime        @default(now()) @map("created_at")
+  updatedAt           DateTime        @updatedAt @map("updated_at")
+  //
+  ticketNumber        String          @unique @map("ticket_number") // ex.: "TKT-2025-000123"
+  year                Int
+  sequence            Int
+  //
+  title               String          @db.VarChar(200)
+  description         String          @db.Text
+  dueDate             DateTime        @map("due_date")
+  //
+  severity            Severity
+  aiSuggestedSeverity Severity?       @map("ai_suggested_severity")
+  status              Status          @default(DRAFT)
+  // Autor (Associate)
+  createdById         String          @map("created_by_id") @db.Uuid
+  createdBy           User            @relation("CreatedTickets", fields: [createdById], references: [id])
+  // 
+  reviewedById        String?         @map("reviewed_by_id") @db.Uuid
+  reviewedBy          User?           @relation("ReviewedTickets", fields: [reviewedById], references: [id])
+  // Soft delete
+  deletedAt           DateTime?       @map("deleted_at")
+  //
+  histories           TicketHistory[]
+
+  @@unique([year, sequence])
+  @@index([status])
+  @@index([severity])
+  @@index([dueDate])
+  @@index([createdAt])
+  @@index([createdById])
+  @@map("tickets")
+}
+
+model TicketHistory {
+  id           String    @id @default(uuid()) @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at")
+  //
+  ticketId     String    @map("ticket_id") @db.Uuid
+  ticket       Ticket    @relation(fields: [ticketId], references: [id])
+  //
+  userId       String?   @map("user_id") @db.Uuid
+  user         User?     @relation(fields: [userId], references: [id])
+  // Snapshot
+  fromStatus   Status?   @map("from_status")
+  toStatus     Status?   @map("to_status")
+  fromSeverity Severity? @map("from_severity")
+  toSeverity   Severity? @map("to_severity")
+  reason       String?   @db.VarChar(500)
+
+  @@index([ticketId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("tickets_history")
+}
+
+model TicketSequence {
+  updatedAt DateTime @updatedAt @map("updated_at")
+  lastValue Int      @default(0) @map("last_value")
+  year      Int      @id
+
+  @@map("tickets_sequence")
+}

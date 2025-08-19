@@ -1,9 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 
-/**
- * Cria e aprova N tickets, retornando os IDs (na ordem de criação).
- */
 export async function createAndApproveTickets(
   app: INestApplication,
   associateToken: string,

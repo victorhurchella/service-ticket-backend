@@ -5,6 +5,7 @@ import { setupSwagger } from './config/swagger';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  app.enableShutdownHooks();
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

@@ -15,6 +15,17 @@ async function bootstrap() {
 
   setupSwagger(app);
 
+  const frontEndURL = process.env.FRONT_END_URL;
+
+  if (frontEndURL) {
+    app.enableCors({
+      origin: frontEndURL,
+      methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+      credentials: false,
+      exposedHeaders: ['Content-Disposition'],
+    });
+  }
+
   const port = process.env.PORT ? Number(process.env.PORT) : 8080;
   await app.listen(port, '0.0.0.0');
 }

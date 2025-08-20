@@ -1,98 +1,132 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Service Ticket API (NestJS + Prisma + PostgreSQL)
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A production-minded backend for the **Service Ticket Management System**. It implements the full ticket lifecycle, role-based rules (Associate/Manager), CSV export/import loop, **AI severity suggestion** (OpenAI with deterministic fallback), Swagger docs, and E2E tests.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Stack
 
-## Description
+- **NestJS** (REST API, Swagger)
+- **Prisma** (ORM) + **PostgreSQL** (prefer serverless: Neon / Supabase / AWS Aurora Serverless v2)
+- **JWT Auth** (minimal claims; role-aware)
+- **CSV** export/import + **nightly automation** endpoint
+- **OpenAI** integration with **heuristic fallback** (always returns a valid severity)
+- **Biome** (format/lint)
+- Tests: **Jest + Supertest** (+ **nock** to mock OpenAI)
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Domain Rules
 
-## Project setup
+- Roles:
+  - **Associate**: create tickets; may edit title/description while in **REVIEW** (resets to **DRAFT**).
+  - **Manager**: review **DRAFT** tickets (cannot review their own). Actions:
+    - **APPROVE** → **PENDING**
+    - **CHANGE_SEVERITY** (must provide reason)
+      - If severity **increases** → **REVIEW** (signals associate to revisit)
+      - If severity **decreases** → **PENDING**
+- Statuses: **DRAFT → (REVIEW) → PENDING → OPEN → CLOSED**
+- Soft delete allowed **only** before **PENDING**.
+- Human-readable number: **`TKT-YYYY-XXXXXX`** (sequential per year).
+- CSV:
+  - **Export**: all **PENDING** tickets.
+  - **Auto-process** (simulated external system): stable distribution ≈ **33/33/34** across **PENDING/OPEN/CLOSED**.
+  - **Import**: updates **only** `status` (idempotent/validated).
+- AI: OpenAI when available; otherwise deterministic **heuristic** that still returns a valid enum.
 
-```bash
-$ yarn install
+## Environment
+
+Create `.env`:
+
+```
+# Database (serverless recommended)
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/service_ticket
+DATABASE_URL_TEST=postgresql://postgres:postgres@localhost:5432/service_ticket_test
+
+# CORS
+FRONT_END_URL=http://localhost:5173
+
+# Auth
+JWT_SECRET=replace-me
+JWT_EXPIRES_IN=1d
+
+# AI (optional; heuristic used if absent)
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_BASE_URL=https://api.openai.com/v1/chat/completions
+OPENAI_TIMEOUT_MS=2500
+
+# Automation
+CRON_SECRET=replace-me-secret
+
+# App
+PORT=8080
+NODE_ENV=development
 ```
 
-## Compile and run the project
+## Install & Run (dev)
 
 ```bash
-# development
-$ yarn run start
+yarn
+yarn prisma generate
+yarn prisma migrate dev -n init
+yarn prisma db seed
 
-# watch mode
-$ yarn run start:dev
-
-# production mode
-$ yarn run start:prod
+yarn start:dev
+# Swagger: http://localhost:8080/docs
 ```
 
-## Run tests
+## Demo Credentials
+
+- **Associate** — `associate@example.com` / `Password123!`
+- **Manager** — `manager@example.com` / `Password123!`
+
+### CORS
+
+CORS is enabled in `main.ts` to allow this origin, preflight, and headers (e.g., `X-Cron-Secret`, `Content-Disposition` for CSV filename). You can also set `CORS_ORIGIN` in `.env`.
+
+## REST Endpoints (overview)
+
+- **Auth**
+  - `POST /auth/login` → `{ access_token, user }`
+- **Tickets**
+  - `GET /tickets?status=...` (paginated)
+  - `POST /tickets`
+  - `PATCH /tickets/:id` → edit while **REVIEW** (Associate original author or Manager not creator) → **DRAFT**
+  - `PATCH /tickets/:id/review` (Manager, not creator)
+    - `{ "action": "APPROVE" }` → **PENDING**
+    - `{ "action": "CHANGE_SEVERITY", "newSeverity", "severityChangeReason" }`
+      - Increase → **REVIEW**
+      - Decrease → **PENDING**
+  - `DELETE /tickets/:id` (soft delete) — only `< PENDING`
+- **CSV**
+  - `GET /csv/export/pending` → CSV of **PENDING**
+  - `POST /csv/auto-process` (multipart) → processed CSV (~33/33/34)
+  - `POST /csv/import` (multipart) → `{ updatedCount, skippedCount, totalRows, errorsCount }`
+- **Automation**
+  - `POST /automation/run-now` (Manager) → export→process→import
+  - `POST /automation/nightly` (header `x-cron-secret`) → export→process→import
+- **AI**
+  - `POST /ai/severity-suggestion` → `{ severity, source: "LLM"|"HEURISTIC", model?, reasons? }`
+
+## Tests
 
 ```bash
-# unit tests
-$ yarn run test
-
-# e2e tests
-$ yarn run test:e2e
-
-# test coverage
-$ yarn run test:cov
+# E2E (Jest + Supertest), with OpenAI mocked via nock
+yarn test:e2e
 ```
 
-## Deployment
+E2E covers:
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+- Draft → Review → Edit back to Draft → Approve → Pending
+- “Manager cannot review own ticket”
+- Soft delete rules
+- CSV export/import cycle (exact counts asserted)
+- Automation run-now / nightly (secret)
+- AI module (heuristic + OpenAI mocked responses)
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Serverless Principles & AWS Notes
 
-```bash
-$ yarn install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- **12-factor** env config; **stateless** containers; idempotent CSV import; bounded-time AI calls (timeouts).
+- **Containerized** Dockerfile; health endpoints via Nest defaults.
+- **DB**: serverless Postgres (Neon / Supabase / Aurora Serverless v2).
+- **AWS Fargate (ECS)**:
+  - Push image to ECR; create ECS service behind ALB; enable auto-scaling.
+  - Nightly job: **Scheduled Task** (CloudWatch Events) hitting `/automation/nightly` with `x-cron-secret`.
+  - “Scale to zero” can be approximated with on-demand tasks / schedules; or use a platform that supports zero-scale natively.

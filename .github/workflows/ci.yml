@@ -2,54 +2,54 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
 
 env:
   PORT: 3000
-  DATABASE_URL: 'postgresql://postgres:postgres@127.0.0.1:5432/service-ticket-api'
-  DATABASE_URL_TEST: 'postgresql://postgres:postgres@127.0.0.1:5432/service-ticket-api-test'
-  CRON_SECRET: 'e2e-cron-secret'
+  DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/service-ticket-api
+  DATABASE_URL_TEST: postgresql://postgres:postgres@127.0.0.1:5432/service-ticket-api
+  JWT_SECRET: e2e-jwt
+  CRON_SECRET: e2e-cron-secret
+  OPENAI_API_KEY: test-key
+  OPENAI_MODEL: gpt-4o-mini
+  OPENAI_BASE_URL: https://api.openai.com/v1/chat/completions
   NODE_OPTIONS: '--max_old_space_size=4096'
 
 jobs:
   ci:
-    permissions:
-      checks: write
-      pull-requests: write
-      contents: write
     runs-on: ubuntu-latest
+
     services:
       postgres:
-        image: postgres
+        image: postgres:16
         ports: ['5432:5432']
         env:
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: service-ticket-api
         options: >-
-          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 10
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
-      - name: Check out repository code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Cache node modules
-        uses: actions/cache@v4
+      - uses: actions/setup-node@v4
         with:
-          path: ~/.yarn/cache
-          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-yarn-
-
-      - uses: actions/setup-node@v3
-        with:
-          node-version-file: '.nvmrc'
+          node-version: '20.x'
           cache: 'yarn'
 
-      - name: Install node dependencies
-        run: yarn install --frozen-lockfile
+      - run: yarn install --frozen-lockfile
 
-      - name: Build
-        run: yarn run prisma generate && yarn run build
+      - run: yarn prisma generate --schema src/database/schema/schema.prisma
 
-      - name: Run tests
-        run: yarn test:ci
+      - run: yarn prisma migrate deploy --schema src/database/schema/schema.prisma
+
+      - run: yarn prisma db seed
+
+      - run: yarn build
+
+      - run: yarn test:ci

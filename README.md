@@ -2,6 +2,8 @@
 
 A production-minded backend for the **Service Ticket Management System**. It implements the full ticket lifecycle, role-based rules (Associate/Manager), CSV export/import loop, **AI severity suggestion** (OpenAI with deterministic fallback), Swagger docs, and E2E tests.
 
+---
+
 ## Stack
 
 - **NestJS** (REST API, Swagger)
@@ -11,6 +13,8 @@ A production-minded backend for the **Service Ticket Management System**. It imp
 - **OpenAI** integration with **heuristic fallback** (always returns a valid severity)
 - **Biome** (format/lint)
 - Tests: **Jest + Supertest** (+ **nock** to mock OpenAI)
+
+---
 
 ## Domain Rules
 
@@ -30,11 +34,13 @@ A production-minded backend for the **Service Ticket Management System**. It imp
   - **Import**: updates **only** `status` (idempotent/validated).
 - AI: OpenAI when available; otherwise deterministic **heuristic** that still returns a valid enum.
 
+---
+
 ## Environment
 
-Create `.env`:
+Create `.env` (for local/dev):
 
-```
+```env
 # Database (serverless recommended)
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/service_ticket
 DATABASE_URL_TEST=postgresql://postgres:postgres@localhost:5432/service_ticket_test
@@ -60,6 +66,13 @@ PORT=8080
 NODE_ENV=development
 ```
 
+> **Prisma engine note (Cloud Run):** The container base is Debian 12 (bookworm, **OpenSSL 3**).  
+> `schema.prisma` already sets:  
+> `binaryTargets = ["native", "debian-openssl-3.0.x"]`.  
+> The Dockerfile runs `yarn prisma generate` **inside Linux** and ships the generated client to runtime.
+
+---
+
 ## Install & Run (dev)
 
 ```bash
@@ -72,6 +85,8 @@ yarn start:dev
 # Swagger: http://localhost:8080/docs
 ```
 
+---
+
 ## Demo Credentials
 
 - **Associate** — `associate@example.com` / `Password123!`
@@ -79,7 +94,151 @@ yarn start:dev
 
 ### CORS
 
-CORS is enabled in `main.ts` to allow this origin, preflight, and headers (e.g., `X-Cron-Secret`, `Content-Disposition` for CSV filename). You can also set `CORS_ORIGIN` in `.env`.
+CORS is enabled in `main.ts` to allow configured origins, preflight, and headers (e.g., `X-Cron-Secret`, `Content-Disposition` for CSV filename).  
+Set `FRONT_END_URL` (or `CORS_ORIGIN`) as needed.
+
+---
+
+# Deployment (gcloud, no Terraform)
+
+This section formalizes a **containerized, serverless, scale-to-zero** deployment on **Cloud Run**, using **Artifact Registry** + **Cloud Build** and **Secret Manager**.
+
+> ✅ Requirements satisfied:
+>
+> - **Dockerfile** (containerized)
+> - **Serverless hosting** on **Cloud Run**
+> - **Scale to zero** (default on Cloud Run)
+
+## 0) Prerequisites
+
+- Google Cloud project (use your **Project ID**)
+- **gcloud** CLI installed and authenticated:
+  ```bash
+  gcloud auth login
+  gcloud config set project <PROJECT_ID>
+  ```
+- Region used below: `us-central1` (change if needed).
+
+## 1) Enable APIs & create Docker repository
+
+```bash
+gcloud services enable artifactregistry.googleapis.com cloudbuild.googleapis.com run.googleapis.com secretmanager.googleapis.com cloudscheduler.googleapis.com
+
+gcloud artifacts repositories create apps \
+  --repository-format=docker \
+  --location=us-central1 \
+  --description="Docker repo for apps"
+```
+
+## 2) Create secrets (Secret Manager)
+
+> **Database (Neon)**: include `?sslmode=require` in the URL.
+
+**Windows PowerShell** (avoids newline issues):
+
+```powershell
+# Set your real values here
+$env:DATABASE_URL   = "postgres://user:pass@host/db?sslmode=require"
+$env:JWT_SECRET     = "replace-me"
+$env:CRON_SECRET    = "replace-me-cron"
+$env:OPENAI_API_KEY = "sk-proj00"
+
+$tmp = New-TemporaryFile
+Set-Content -Path $tmp -Value $env:DATABASE_URL -NoNewline -Encoding UTF8
+gcloud secrets create DATABASE_URL --replication-policy=automatic
+gcloud secrets versions add DATABASE_URL --data-file=$tmp
+Remove-Item $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -Path $tmp -Value $env:JWT_SECRET -NoNewline -Encoding UTF8
+gcloud secrets create JWT_SECRET --replication-policy=automatic
+gcloud secrets versions add JWT_SECRET --data-file=$tmp
+Remove-Item $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -Path $tmp -Value $env:CRON_SECRET -NoNewline -Encoding UTF8
+gcloud secrets create CRON_SECRET --replication-policy=automatic
+gcloud secrets versions add CRON_SECRET --data-file=$tmp
+Remove-Item $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -Path $tmp -Value $env:OPENAI_API_KEY -NoNewline -Encoding UTF8
+gcloud secrets create OPENAI_API_KEY --replication-policy=automatic
+gcloud secrets versions add OPENAI_API_KEY --data-file=$tmp
+Remove-Item $tmp
+```
+
+> To update a secret later (without recreating):  
+> `gcloud secrets versions add <NAME> --data-file=<FILE>` (Cloud Run uses `latest` on next revision).
+
+## 3) Build & push the image (Cloud Build)
+
+From the **backend root** (where the `Dockerfile` lives):
+
+```bash
+gcloud builds submit --tag us-central1-docker.pkg.dev/<PROJECT_ID>/apps/service-ticket-api:prod .
+```
+
+## 4) First deploy to Cloud Run
+
+Create the service setting **secrets** and **env vars** in one go:
+
+```bash
+gcloud run deploy service-ticket-api \
+  --image us-central1-docker.pkg.dev/<PROJECT_ID>/apps/service-ticket-api:prod \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-secrets DATABASE_URL=DATABASE_URL:latest,JWT_SECRET=JWT_SECRET:latest,CRON_SECRET=CRON_SECRET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest \
+  --update-env-vars "NODE_ENV=production,OPENAI_MODEL=gpt-4o-mini,CORS_ORIGIN=http://localhost:5173"
+```
+
+Output will include:  
+`Service URL: https://service-ticket-api-XXXXXXXXXX.us-central1.run.app`
+
+- **Swagger**: `https://.../docs`
+- **Scale to zero**: with no traffic, Cloud Run reduces instances to 0 (see **Metrics**).
+
+## 5) Database migrations (one-off)
+
+Run locally (pointing to the same `DATABASE_URL` as the Secret), or use an ephemeral container/Cloud Run Job:
+
+```bash
+# local
+export DATABASE_URL="postgres://user:pass@host/db?sslmode=require"
+yarn prisma migrate deploy --schema src/database/schema/schema.prisma
+yarn prisma db seed
+```
+
+## 6) Nightly automation (Scheduler, optional)
+
+Create a **Cloud Scheduler** job to call `/automation/nightly` daily (no auth, protected by `x-cron-secret`):
+
+```bash
+SERVICE_URL="$(gcloud run services describe service-ticket-api --region us-central1 --format='value(status.url)')"
+
+gcloud scheduler jobs create http service-ticket-api-nightly \
+  --location us-central1 \
+  --schedule "0 3 * * *" \
+  --time-zone "Etc/UTC" \
+  --uri "${SERVICE_URL}/automation/nightly" \
+  --http-method POST \
+  --headers "x-cron-secret=$(gcloud secrets versions access latest --secret=CRON_SECRET)" \
+  --headers "Content-Type=application/json" \
+  --message-body "{}"
+```
+
+Run it manually to verify:
+
+```bash
+gcloud scheduler jobs run service-ticket-api-nightly --location us-central1
+```
+
+**One-liner to deploy new code:**
+
+```bash
+gcloud builds submit --tag us-central1-docker.pkg.dev/<PROJECT_ID>/apps/service-ticket-api:prod . \
+&& gcloud run deploy service-ticket-api --image us-central1-docker.pkg.dev/<PROJECT_ID>/apps/service-ticket-api:prod --region us-central1 --allow-unauthenticated
+```
 
 ## REST Endpoints (overview)
 
@@ -105,6 +264,8 @@ CORS is enabled in `main.ts` to allow this origin, preflight, and headers (e.g.,
 - **AI**
   - `POST /ai/severity-suggestion` → `{ severity, source: "LLM"|"HEURISTIC", model?, reasons? }`
 
+---
+
 ## Tests
 
 ```bash
@@ -112,7 +273,7 @@ CORS is enabled in `main.ts` to allow this origin, preflight, and headers (e.g.,
 yarn test:e2e
 ```
 
-E2E covers:
+Covers:
 
 - Draft → Review → Edit back to Draft → Approve → Pending
 - “Manager cannot review own ticket”
@@ -120,13 +281,3 @@ E2E covers:
 - CSV export/import cycle (exact counts asserted)
 - Automation run-now / nightly (secret)
 - AI module (heuristic + OpenAI mocked responses)
-
-## Serverless Principles & AWS Notes
-
-- **12-factor** env config; **stateless** containers; idempotent CSV import; bounded-time AI calls (timeouts).
-- **Containerized** Dockerfile; health endpoints via Nest defaults.
-- **DB**: serverless Postgres (Neon / Supabase / Aurora Serverless v2).
-- **AWS Fargate (ECS)**:
-  - Push image to ECR; create ECS service behind ALB; enable auto-scaling.
-  - Nightly job: **Scheduled Task** (CloudWatch Events) hitting `/automation/nightly` with `x-cron-secret`.
-  - “Scale to zero” can be approximated with on-demand tasks / schedules; or use a platform that supports zero-scale natively.

@@ -11,6 +11,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+
     steps:
       - uses: actions/checkout@v4
 
@@ -21,7 +22,13 @@ jobs:
 
       - run: yarn install --frozen-lockfile
 
-      - run: yarn test
+      - name: Prepare test env
+        run: |
+          echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" >> $GITHUB_ENV
+          echo "NODE_ENV=test" >> $GITHUB_ENV
+
+      - name: Run tests
+        run: yarn test
 
       - uses: google-github-actions/auth@v2
         with:

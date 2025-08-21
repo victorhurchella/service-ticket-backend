@@ -46,7 +46,7 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/service_ticket
 DATABASE_URL_TEST=postgresql://postgres:postgres@localhost:5432/service_ticket_test
 
 # CORS
-FRONT_END_URL=http://localhost:5173
+FRONT_END_URL=https://service-ticket-woad.vercel.app
 
 # Auth
 JWT_SECRET=replace-me
@@ -95,7 +95,7 @@ yarn start:dev
 ### CORS
 
 CORS is enabled in `main.ts` to allow configured origins, preflight, and headers (e.g., `X-Cron-Secret`, `Content-Disposition` for CSV filename).  
-Set `FRONT_END_URL` (or `CORS_ORIGIN`) as needed.
+Set `FRONT_END_URL` as needed.
 
 ---
 
@@ -189,7 +189,7 @@ gcloud run deploy service-ticket-api \
   --region us-central1 \
   --allow-unauthenticated \
   --set-secrets DATABASE_URL=DATABASE_URL:latest,JWT_SECRET=JWT_SECRET:latest,CRON_SECRET=CRON_SECRET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest \
-  --update-env-vars "NODE_ENV=production,OPENAI_MODEL=gpt-4o-mini,CORS_ORIGIN=http://localhost:5173"
+  --update-env-vars "NODE_ENV=production,OPENAI_MODEL=gpt-4o-mini,FRONT_END_URL=https://service-ticket-woad.vercel.app/"
 ```
 
 Output will include:  
